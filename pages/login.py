@@ -1,6 +1,9 @@
 # pages/login.py
 import streamlit as st
 import time
+from utils import get_logger
+
+logger = get_logger(__name__)
 
 st.set_page_config(
     page_title="登录",
@@ -45,6 +48,7 @@ with col2:
             elif check_login(username, password):
                 st.session_state.logged_in = True
                 st.session_state.username = username
+                logger.success(f"登录成功，用户名：{username}")
                 st.success("登录成功！正在跳转...")
                 time.sleep(0.5)
                 st.switch_page("pages/home.py")
