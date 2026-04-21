@@ -1,4 +1,5 @@
 # Python 编译缓存（屏蔽所有.pyc文件）
+**/__pycache__/*
 */__pycache__/*
 *.py[cod]
 *$py.class
@@ -10,8 +11,6 @@ venv/
 .venv/
 env/
 
-# 冗余错误文件
-requirement.txt
 
 # Streamlit 缓存
 .streamlit/
