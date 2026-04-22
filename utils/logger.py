@@ -31,13 +31,13 @@ from .setting import settings
 #==================日志配置====================
 def setup_logging(
     log_level: Optional[str] = None,
-    log_file: Optional[str] = None,
-    rotation: Optional[str] = None,
+    log_file:  Optional[str] = None,
+    rotation:  Optional[str] = None,
     retention: Optional[str] = None,
 ) -> None:
     log_level = log_level or settings.log_level
-    log_file = log_file or settings.log_file
-    rotation = rotation or settings.log_rotation
+    log_file  = log_file  or settings.log_file
+    rotation  = rotation  or settings.log_rotation
     retention = retention or settings.log_retention
 
     logger.remove()

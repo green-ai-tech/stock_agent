@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     log_rotation: str               = Field(default="100 MB", description="日志文件轮转大小")
     log_retention: str              = Field(default="30 days", description="日志文件保留时间")
 
+
+    #====================4. 数据库的配置 ==========================
+    DATABASE_URL: str = Field(default="postgresql://postgres:123456@localhost:5432/stockagent",description="连接数据库URL")
+
 #全局单例
 settings = Settings()
 
