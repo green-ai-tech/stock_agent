@@ -19,6 +19,12 @@ tushare==1.4.29
 # LLM / Agent
 langchain==1.2.15
 
+# RAG 向量数据库与文档处理
+chromadb>=1.0.0
+pypdf>=5.0.0
+langchain-text-splitters>=0.3.0
+langchain-ollama>=0.3.0
+
 # 数据库 (PostgreSQL + ORM)
 sqlalchemy>=2.0.49
 psycopg2-binary>=2.9.0

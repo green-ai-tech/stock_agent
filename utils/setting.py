@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     #====================2. RAG与向量数据库的配置===================
     vector_store_dir: str         = Field(default=VECTOR_STORE_PATH,  description="向量数据库目录")
     embedding_model: str          = Field(default="qwen3-embedding:4b")
+    embedding_base_url: str       = Field(default="http://127.0.0.1:11434", description="Embedding 模型地址（可与 LLM 地址不同）")
     chunk_size: int               = Field(default=1000)
     chunk_overlap: int            = Field(default=200)
     retriever_search_type: str    = Field(default="similarity")

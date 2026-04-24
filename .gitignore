@@ -27,6 +27,9 @@ logs/
 imgs/stock/
 **/.data_cache/
 
+# 向量数据库
+data/chroma/
+
 # IDE
 .vscode/
 .idea/

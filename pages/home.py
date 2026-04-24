@@ -5,6 +5,7 @@ from datetime import datetime
 from uis.ui_ai_assistant import ui_ai_assistant
 from uis.ui_setting import ui_setting
 from uis.ui_stock_analysis import ui_stock_analysis
+from uis.ui_knowledge_base import ui_knowledge_base
 from utils.chat_history import (
     create_conversation, get_user_conversations,
     delete_conversation, get_messages, generate_title,
@@ -124,9 +125,13 @@ with st.sidebar:
             st.session_state.page = "模型参数设置"
             st.session_state.conv_id = None
             st.rerun()
+        if st.button("📚 知识库管理", width="stretch", type="primary" if st.session_state.page == "知识库管理" else "secondary"):
+            st.session_state.page = "知识库管理"
+            st.session_state.conv_id = None
+            st.rerun()
 
     # ========== 历史会话列表（仅在对话页面显示） ==========
-    if st.session_state.page in ("股市数据分析", "股市智慧助手"):
+    if st.session_state.page == "股市智慧助手":
         st.divider()
         agent_type = _agent_type_for_page(st.session_state.page)
         user_id = st.session_state.get("user_id")
@@ -173,3 +178,6 @@ elif st.session_state.page == "股市智慧助手":
 
 elif st.session_state.page == "模型参数设置":
     ui_setting()
+
+elif st.session_state.page == "知识库管理":
+    ui_knowledge_base()

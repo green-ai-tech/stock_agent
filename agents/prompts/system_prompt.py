@@ -251,9 +251,12 @@ TOOL_USAGE_INSTRUCTIONS = """
 可用工具说明：
     - get_current_time: 获取当前时间和日期（仅在需要精确时间戳时使用）
     - get_current_date：获取当前时间和星期（仅在需要知道星期几的时候使用）
+    - search_knowledge_base: 搜索投资知识库，获取专业知识参考内容
 使用工具的时机：
     - 需要知道当前时间或日期时，使用 get_current_time（注意：查询天气时不需要先调用此工具）
     - 需要知道当前是星期几时，使用 get_current_date
+    - 用户询问投资概念、技术指标含义、财务分析方法、K线形态定义等专业知识时，使用 search_knowledge_base
+    - 用户提问中包含"什么是"、"解释一下"、"介绍一下"、"怎么理解"等表述且涉及投资领域时，优先使用 search_knowledge_base
 """
 
 
