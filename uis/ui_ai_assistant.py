@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from utils.logger import logger
 from agents.stock_agent import create_stock_analyst_agent
+from agents.multi_agent import create_multi_agent_graph
 from utils.setting import settings
 from utils.paths import get_stock_charts_dir
 from utils.chat_history import add_message, create_conversation, generate_title
@@ -56,16 +57,25 @@ def ui_ai_assistant():
     if "stock_agent" not in st.session_state:
         with st.spinner("正在初始化智能分析师..."):
             try:
-                st.session_state.stock_agent = create_stock_analyst_agent()
-                logger.info("股票分析智能体加载成功")
-                st.success("✅ 智能体初始化成功")
+                if settings.use_multi_agent:
+                    st.session_state.stock_agent = create_multi_agent_graph()
+                    st.session_state.agent_mode = "multi"
+                    logger.info("多 Agent 系统加载成功 (Supervisor + 3 子 Agent)")
+                    st.success("✅ 多 Agent 系统初始化成功")
+                else:
+                    st.session_state.stock_agent = create_stock_analyst_agent()
+                    st.session_state.agent_mode = "single"
+                    logger.info("股票分析智能体加载成功（单 Agent 模式）")
+                    st.success("✅ 智能体初始化成功")
             except Exception as e:
                 logger.error(f"智能体加载失败: {e}", exc_info=True)
                 st.error(f"❌ 智能体初始化失败：{str(e)}")
                 return
 
+    agent_mode = st.session_state.get("agent_mode", "single")
+    mode_label = "多 Agent (Supervisor)" if agent_mode == "multi" else "单 Agent (ReAct)"
     st.title("📊 智能股票分析助手")
-    st.caption(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 模型: {settings.llm_model}")
+    st.caption(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 模型: {settings.llm_model} | 模式: {mode_label}")
 
     with st.expander("📌 使用说明", expanded=False):
         st.markdown("""

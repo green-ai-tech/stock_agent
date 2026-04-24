@@ -7,7 +7,9 @@
 
 
 from typing import List,Optional,Dict,Any,Iterator,AsyncIterator,Union,Sequence         #约束定义类型
-from langchain.messages import AIMessage,HumanMessage,SystemMessage
+import time
+import json
+from langchain.messages import AIMessage,HumanMessage,SystemMessage,ToolMessage
 from langchain_core.messages import BaseMessage, AIMessageChunk
 from langchain.tools import BaseTool
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -163,49 +165,79 @@ class BaseAgent:
             Agent 的响应文本
 
         """
-        logger.info(f"执行 Agent 调用: {input_text[:50]}...")
-        
+        input_preview = input_text[:80].replace("\n", " ")
+        logger.info(f"[BaseAgent] ═══ invoke 开始 ═══ thread={thread_id}")
+        logger.info(f"[BaseAgent] 用户输入: {input_preview}...")
+        if chat_history:
+            logger.debug(f"[BaseAgent] 携带历史消息: {len(chat_history)} 条")
+
+        t0 = time.time()
         try:
             messages = []
             # 添加历史消息
             if chat_history:
                 messages.extend(chat_history)
-            
+
             # 添加当前用户消息
             messages.append(HumanMessage(content=input_text))
-            
+
             # 准备输入
             graph_input = {"messages": messages}
             graph_input.update(kwargs)
-            
+
             # 执行 Graph
-            # CompiledStateGraph 的 invoke 方法返回最终状态
             config = {
                 "configurable": {
                     "thread_id": thread_id
                 }
             }
+            logger.info(f"[BaseAgent] 调用 graph.invoke() ...")
             result = self.graph.invoke(graph_input, config=config)
-            
-            # 提取最后一条 AI 消息
-            # result 是一个包含 "messages" 键的字典
+            elapsed = time.time() - t0
+
+            # 提取最后一条 AI 消息 + 工具调用日志
             output_messages = result.get("messages", [])
-            
+            logger.info(
+                f"[BaseAgent] graph 执行完成, 耗时: {elapsed:.2f}s, "
+                f"输出消息数: {len(output_messages)}"
+            )
+
+            # 日志：工具调用记录
+            tool_calls_count = 0
+            for msg in output_messages:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_calls_count += 1
+                        tc_name = tc.get("name", "?")
+                        tc_args = tc.get("args", {})
+                        logger.info(
+                            f"[BaseAgent] 🔧 工具 #{tool_calls_count}: "
+                            f"{tc_name}({json.dumps(tc_args, ensure_ascii=False)[:200]})"
+                        )
+                if isinstance(msg, ToolMessage):
+                    tool_preview = (msg.content or "")[:150].replace("\n", " ")
+                    logger.debug(f"[BaseAgent] 📥 工具返回: {tool_preview}...")
+
             # 找到最后一条 AI 消息
             ai_response = ""
             for msg in reversed(output_messages):
                 if isinstance(msg, AIMessage):
                     ai_response = msg.content
                     break
-            
-            logger.success(f"Agent 调用完成，输出长度: {len(ai_response)} 字符")
-            # logger.success(f"\t输出: {ai_response[:100]}...")
-            
+
+            output_preview = ai_response[:120].replace("\n", " ")
+            logger.success(
+                f"[BaseAgent] ✅ invoke 完成, 耗时 {elapsed:.2f}s, "
+                f"工具调用 {tool_calls_count} 次, 输出 {len(ai_response)} 字符"
+            )
+            logger.debug(f"[BaseAgent] 输出预览: {output_preview}...")
+
             return ai_response
-            
+
         except Exception as e:
+            elapsed = time.time() - t0
             error_msg = f"Agent 执行失败: {str(e)}"
-            logger.error(f"{error_msg}")
+            logger.error(f"[BaseAgent] ❌ invoke 失败, 耗时 {elapsed:.2f}s: {e}", exc_info=True)
             return f"抱歉，处理您的请求时出现错误: {str(e)}"
     
     def stream(
@@ -218,7 +250,7 @@ class BaseAgent:
     ) -> Iterator[str]:
         """
         流式调用 Agent
-        
+
         Args:
             input_text: 用户输入的文本
             chat_history: 对话历史（可选）
@@ -227,44 +259,55 @@ class BaseAgent:
                         - "updates": 返回状态更新
                         - "values": 返回完整状态值
             **kwargs: 其他参数
-            
+
         Yields:
             Agent 输出的文本片段(使用生成器返回)
-            
+
         """
-        logger.info(f"执行 Agent 流式调用: {input_text[:50]}...")
-        
+        input_preview = input_text[:80].replace("\n", " ")
+        logger.info(f"[BaseAgent] ═══ stream 开始 ═══ thread={thread_id}, mode={stream_mode}")
+        logger.info(f"[BaseAgent] 用户输入: {input_preview}...")
+
+        t0 = time.time()
+        chunk_count = 0
         try:
             # 准备消息列表
             messages = []
             if chat_history:
                 messages.extend(chat_history)
             messages.append(HumanMessage(content=input_text))
-            
+
             # 准备输入
             graph_input = {"messages": messages}
             graph_input.update(kwargs)
-            
+
             # 流式执行 Graph
             config = {
                 "configurable": {
                     "thread_id": thread_id
                 }
             }
-            # CompiledStateGraph 的 stream 方法支持多种模式  （stream_mode对stream函数无效）
+            logger.info(f"[BaseAgent] 调用 graph.stream() ...")
+
             for chunk in self.graph.stream(graph_input, stream_mode=stream_mode, config=config):
+                chunk_count += 1
                 # 根据 stream_mode 处理不同的输出格式
                 if stream_mode == "messages":
                     # messages 模式：chunk 是 (message, metadata) 元组
                     if isinstance(chunk, tuple) and len(chunk) == 2:
                         message, metadata = chunk
                         if isinstance(message, (AIMessage, AIMessageChunk)) and message.content:
-                            # logger.success(f"\t流式输出: {message.content[:50]}...")
-                            yield message.content   #没使用return，使用yield（协程）
+                            # 工具调用日志
+                            if hasattr(message, "tool_calls") and message.tool_calls:
+                                for tc in message.tool_calls:
+                                    logger.info(f"[BaseAgent] 🔧 流式工具调用: {tc.get('name', '?')}({tc.get('args', {})})")
+                            yield message.content
                     elif isinstance(chunk, (AIMessage, AIMessageChunk)) and chunk.content:
-                        # logger.success(f"\t流式输出: {chunk.content[:50]}...")
+                        if hasattr(chunk, "tool_calls") and chunk.tool_calls:
+                            for tc in chunk.tool_calls:
+                                logger.info(f"[BaseAgent] 🔧 流式工具调用: {tc.get('name', '?')}({tc.get('args', {})})")
                         yield chunk.content
-                
+
                 elif stream_mode == "updates":
                     # updates 模式：chunk 是状态更新字典
                     if isinstance(chunk, dict) and "messages" in chunk:
@@ -273,12 +316,14 @@ class BaseAgent:
                             last_msg = messages_update[-1]
                             if isinstance(last_msg, AIMessage) and last_msg.content:
                                 yield last_msg.content
-            
-            logger.success("Agent 流式调用完成")
-            
+
+            elapsed = time.time() - t0
+            logger.success(f"[BaseAgent] ✅ stream 完成, 耗时 {elapsed:.2f}s, 共 {chunk_count} 个 chunk")
+
         except Exception as e:
+            elapsed = time.time() - t0
             if isinstance(e, NotImplementedError):
-                logger.warning("当前模型或适配器不支持 stream，已自动回退为 invoke")
+                logger.warning(f"[BaseAgent] stream 不支持 (耗时 {elapsed:.2f}s)，回退到 invoke")
                 fallback_response = self.invoke(
                     input_text=input_text,
                     chat_history=chat_history,

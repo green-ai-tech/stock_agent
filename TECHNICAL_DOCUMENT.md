@@ -1,490 +1,568 @@
-# Stock Agent - 项目技术文档
+# Stock Agent — AI Agent 系统技术文档
+
+> **定位**：面向大模型 / Agent 开发岗位的技术深度展示  
+> **核心框架**：LangChain + LangGraph  
+> **架构模式**：Supervisor + 子 Agent 多 Agent 系统
+
+---
 
 ## 1. 项目概述
 
-**项目名称**：Stock Agent - 智能股票分析系统  
-**项目类型**：毕业设计 + 求职作品  
-**开发周期**：2025年X月 - 2026年X月  
-**项目简介**：基于大语言模型（LLM）的 A 股智能分析平台，集成 AI Agent 对话、知识库检索（RAG）、K 线图表生成、用户管理等功能，提供智能化的股票分析和投资建议。
+基于 LangChain + LangGraph 的 A 股智能分析平台，核心是 **多 Agent 系统**：Supervisor 路由 + 3 个专业子 Agent（数据获取、图表分析、知识库检索）协作完成任务。支持单 Agent（ReAct）和多 Agent（Supervisor）两种模式通过环境变量切换。
 
 ---
 
-## 2. 技术架构
+## 2. Agent 设计流程 + 多 Agent 架构（核心）
 
-### 2.1 整体架构图
+### 2.1 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit 前端层                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ 登录/注册 │  │ AI 助手  │  │ 数据仪表盘│  │ 知识库   │    │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
-└─────────────────────────────────────────────────────────────┘
+用户输入
+    │
+    ▼
+┌──────────────┐
+│  Supervisor  │ ← LLM 路由决策（temperature=0）
+│  (Router)    │   输出 JSON: {"next": "data_agent"|"analysis_agent"|"rag_agent"|"FINISH"}
+└──────┬───────┘
+       │
+       ├────────────────────┬───────────────────┐
+       ▼                    ▼                   ▼
+┌──────────────┐   ┌────────────────┐   ┌──────────────┐
+│  data_agent  │   │ analysis_agent │   │  rag_agent   │
+│  (ReAct)     │   │   (ReAct)      │   │   (ReAct)    │
+│  工具:       │   │   工具:        │   │   工具:      │
+│  股票数据API │   │   图表生成     │   │   向量检索   │
+└──────────────┘   └────────────────┘   └──────────────┘
+       │                    │                   │
+       └────────────────────┼───────────────────┘
+                            ▼
+                       Supervisor
+                      (循环或 FINISH)
                             │
                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Agent 编排层 (LangChain)                   │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  BaseAgent (ReAct 模式)                               │   │
-│  │  ┌────────────┐ ┌────────────┐ ┌────────────────┐   │   │
-│  │  │ 系统提示词  │ │ 工具列表   │ │ 短期记忆       │   │   │
-│  │  └────────────┘ └────────────┘ └────────────────┘   │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                            │
-            ┌───────────────┼───────────────┐
-            ▼               ▼               ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│  股票数据工具   │ │  RAG 检索工具  │ │  时间工具     │
-│  (Tushare)    │ │  (Chroma)     │ │              │
-└───────────────┘ └───────────────┘ └───────────────┘
-            │               │
-            ▼               ▼
-┌───────────────┐ ┌───────────────┐
-│  PostgreSQL   │ │  ChromaDB     │
-│  (业务数据)    │ │  (向量数据)    │
-└───────────────┘ └───────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   LLM 服务层 (Ollama)                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │  LLM 模型    │  │ Embedding 模型│  │  (可扩展)     │      │
-│  │  qwen3.6     │  │ nomic-embed  │  │              │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────────────────────────────────────────┘
+                        最终回复
 ```
 
-### 2.2 技术栈详情
+**两种模式**（通过 `USE_MULTI_AGENT` 环境变量切换）：
+- **单 Agent 模式**：一个 ReAct Agent 集成所有工具，自主决策
+- **多 Agent 模式**：Supervisor 路由 + 专业子 Agent 分工协作
 
-| 层级 | 技术 | 版本 | 用途 |
-|------|------|------|------|
-| **前端** | Streamlit | >=1.45.0 | Web UI 框架，快速构建数据应用 |
-| **AI 框架** | LangChain | >=0.3.25 | Agent 编排、工具调用、记忆管理 |
-| **LLM** | Ollama (qwen3.6) | - | 本地部署大语言模型 |
-| **Embedding** | Ollama (nomic-embed-text) | - | 文本向量化 |
-| **向量数据库** | ChromaDB | >=1.0.0 | 向量存储与相似度检索 |
-| **数据源** | Tushare Pro | >=0.12.0 | A 股历史行情数据 |
-| **关系数据库** | PostgreSQL | 16+ | 用户、会话、消息存储 |
-| **ORM** | SQLAlchemy | >=2.0.0 | 数据库对象关系映射 |
-| **密码加密** | bcrypt | >=4.0.0 | 用户密码哈希存储 |
-| **PDF 解析** | pypdf | >=5.0.0 | 知识库文档加载 |
-| **图表** | Matplotlib | >=3.10.0 | K 线图、趋势图生成 |
-| **日志** | Loguru | >=0.7.0 | 高性能日志框架 |
-| **配置** | Pydantic Settings | >=2.0.0 | 环境变量与配置管理 |
-| **部署** | Uvicorn | >=0.34.0 | ASGI 服务器 |
+### 2.2 完整调用时序图
 
----
+```
+用户: "分析一下贵州茅台600519的技术走势"
+    │
+    ▼
+Supervisor (LLM)
+    │  System Prompt 描述各 Agent 能力 + 输出格式
+    │  LLM 分析用户意图 → {"next": "data_agent"}
+    │
+    ▼
+data_agent (create_agent)
+    │  工具: get_stock_daily_data, get_stock_basic_info
+    │  ReAct 循环:
+    │    Thought: 需要获取股票数据
+    │    Action: get_stock_daily_data(ts_code="600519.SH", days=120)
+    │    Observation: 收盘价 1850.00, MA5=1845.20, 波动率=1.8%...
+    │    Thought: 需要获取基础信息
+    │    Action: get_stock_basic_info(ts_code="600519.SH")
+    │    Observation: 贵州茅台, 白酒行业, PE=28.5...
+    │    Thought: 数据已齐全
+    │    Final Answer: [整合数据输出]
+    │
+    ▼
+Supervisor (LLM)
+    │  看到 data_agent 的输出
+    │  决策: {"next": "analysis_agent"}
+    │
+    ▼
+analysis_agent (create_agent)
+    │  工具: plot_stock_charts
+    │  ReAct 循环:
+    │    Thought: 需要生成图表
+    │    Action: plot_stock_charts(ts_code="600519.SH")
+    │    Observation: 图表已生成: K线图: /path/kline.png, 趋势图: /path/trend.png
+    │    Final Answer: [技术分析报告 + 图表路径]
+    │
+    ▼
+Supervisor (LLM)
+    │  看到完整结果（数据+图表+分析）
+    │  决策: {"next": "FINISH"}
+    │
+    ▼
+最终输出: 数据概览 + 技术分析 + 图表
+```
 
-## 3. 核心功能模块
+### 2.3 Supervisor 路由实现
 
-### 3.1 AI Agent 系统
-
-#### 3.1.1 Agent 架构设计
-
-采用 **ReAct（Reasoning + Acting）** 模式的 Agent 架构，通过 LangChain 的 `create_agent` 实现：
+Supervisor 不使用 ReAct 工具调用，而是 **纯 LLM 决策节点**（减少推理开销）：
 
 ```python
-# 核心创建逻辑
-def create_agent(preset: str = "default") -> BaseAgent:
-    llm = get_llm(preset)
-    agent_executor = create_agent(
-        model=llm,
+SUPERVISOR_SYSTEM_PROMPT = """\
+你是一个任务路由器，负责将用户请求分配给最合适的专业 Agent。
+
+可用 Agent：
+- data_agent：获取股票行情数据和基础信息
+- analysis_agent：生成图表和技术分析报告
+- rag_agent：从知识库检索专业知识
+
+规则：
+1. 根据用户问题的核心意图选择最合适的 Agent
+2. 如果前一个 Agent 的输出已完整回答问题，输出 FINISH
+3. 不要连续重复调用同一个 Agent
+
+输出格式（严格 JSON）：
+{"next": "data_agent"} 或 {"next": "analysis_agent"} 或 {"next": "rag_agent"} 或 {"next": "FINISH"}
+"""
+
+def _build_supervisor_node(llm):
+    def supervisor_node(state: MultiAgentState) -> dict:
+        messages = state["messages"]
+        call_count = state.get("call_count", 0)
+        last_agent = state.get("last_agent", "")
+
+        # LLM 路由决策
+        response = llm.invoke([SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT), *messages])
+        next_agent = _parse_supervisor_response(response.content)
+
+        # 连续调用限制（防死循环）
+        if next_agent == last_agent:
+            call_count += 1
+        else:
+            call_count = 1
+        if call_count >= MAX_CONSECUTIVE_CALLS:  # 3 次上限
+            next_agent = "FINISH"
+
+        return {"next_agent": next_agent, "call_count": call_count, "last_agent": next_agent}
+    return supervisor_node
+```
+
+**Supervisor 输出解析**（兼容 JSON 和纯文本，提升鲁棒性）：
+
+```python
+def _parse_supervisor_response(text: str) -> str:
+    """优先解析 JSON，回退到关键词匹配"""
+    json_match = re.search(r'\{[^}]*"next"\s*:\s*"[^"]*"[^}]*\}', text)
+    if json_match:
+        data = json.loads(json_match.group())
+        candidate = data.get("next", "FINISH")
+        if candidate in VALID_AGENTS:
+            return candidate
+
+    # 回退：关键词匹配
+    for agent_name in ["data_agent", "analysis_agent", "rag_agent"]:
+        if agent_name in text.lower():
+            return agent_name
+    return "FINISH"
+```
+
+### 2.4 子 Agent 创建方式
+
+子 Agent 使用 `langchain.agents.create_agent()` 轻量创建（不使用 InMemorySaver，因为 Supervisor 管理全局状态）：
+
+```python
+def _build_agent_node(agent_name: str, tools: list, system_prompt: str, model):
+    """子 Agent 节点工厂"""
+    agent_graph = create_agent(
+        model=model,
         tools=tools,
-        prompt=system_prompt,
-        checkpointer=MemorySaver(),  # 短期记忆
+        system_prompt=system_prompt,
     )
-    return BaseAgent(agent_executor, config)
+
+    def agent_node(state: MultiAgentState) -> dict:
+        messages = state["messages"]
+        result = agent_graph.invoke({"messages": messages})
+
+        # 提取最后一条 AI 消息
+        for msg in reversed(result.get("messages", [])):
+            if isinstance(msg, AIMessage) and msg.content:
+                return {"messages": [msg]}
+        return {"messages": [AIMessage(content="未产生有效输出")]}
+    return agent_node
 ```
 
-**设计亮点**：
-- **预设配置系统**：支持 4 种预设模式（default/precise/creative/structure），运行时切换不同参数组合
-- **短期记忆**：基于 LangChain `MemorySaver` 实现会话级记忆，支持多轮对话
-- **流式输出**：支持 `stream()` 模式，实时返回推理过程和工具调用
+### 2.5 子 Agent 职责边界与工具分配
 
-#### 3.1.2 工具系统
+| 子 Agent | 职责 | 工具 | 提示词要点 |
+|----------|------|------|-----------|
+| `data_agent` | 获取股票行情 + 基本面 | `get_stock_daily_data`, `get_stock_basic_info` | 强调数据准确性，要求先获取基础信息确认股票身份 |
+| `analysis_agent` | 图表生成 + 技术分析 | `plot_stock_charts` | 强调输出图表路径，提供多维度技术分析（均线、量价、趋势） |
+| `rag_agent` | 知识库检索 + 专业解答 | `search_knowledge_base` | 强调基于检索结果回答，避免幻觉 |
 
-| 工具 | 功能 | 输入参数 |
-|------|------|----------|
-| `get_stock_daily_data` | 获取股票历史行情 | ts_code, days |
-| `get_stock_basic_info` | 获取股票基本信息 | ts_code |
-| `plot_stock_charts` | 绘制 K 线/趋势/饼图 | ts_code, stock_name |
-| `search_knowledge_base` | 检索投资知识库 | query, top_k |
-| `get_current_datetime` | 获取当前时间 | 无 |
-
-**技术指标计算**：
-- MA5/20/60（移动平均线）
-- 日收益率与波动率
-- 成交量统计与分析
-
-### 3.2 RAG 知识库系统
-
-#### 3.2.1 RAG 架构
-
-```
-用户上传文档 (PDF/TXT)
-        │
-        ▼
-┌──────────────┐
-│ 文档加载器    │  pypdf / TextLoader
-└──────────────┘
-        │
-        ▼
-┌──────────────┐
-│ 文本分块器    │  RecursiveCharacterTextSplitter
-│ chunk_size=500│  chunk_overlap=50
-└──────────────┘
-        │
-        ▼
-┌──────────────┐
-│ Embedding    │  Ollama nomic-embed-text (本地)
-└──────────────┘
-        │
-        ▼
-┌──────────────┐
-│ ChromaDB     │  向量持久化存储
-└──────────────┘
-```
-
-#### 3.2.2 RAG 检索流程
-
-采用 **RAG as Tool** 模式，Agent 自主决定何时调用知识库检索：
-
-```
-用户提问："什么是 MACD 指标？"
-        │
-        ▼
-Agent 推理 → 需要调用 search_knowledge_base
-        │
-        ▼
-ChromaDB 向量检索 → 返回相关文档片段
-        │
-        ▼
-Agent 综合检索结果 + 自身知识 → 生成回答
-```
-
-#### 3.2.3 知识库管理
-
-- **预置知识库**：系统内置投资分析、技术指标、风险管理等专业知识
-- **用户自定义**：支持用户上传 PDF/TXT 文档扩展知识库
-- **集合隔离**：预置和用户知识库存储在不同 ChromaDB collection 中
-
-### 3.3 股市数据仪表盘
-
-#### 3.3.1 功能概述
-
-独立的数据可视化页面，无需 AI 对话即可快速浏览市场行情：
-
-| 模块 | 内容 | 数据来源 |
-|------|------|----------|
-| **主要指数** | 上证指数、深证成指、创业板指、恒生指数、标普500 | Tushare / 模拟 |
-| **K 线图** | 上证指数近 60 交易日 K 线 + MA5/MA20 + 成交量 | Tushare / 模拟 |
-| **市场概况** | 上涨/下跌/平盘家数 + 总成交额 | Tushare / 模拟 |
-| **涨跌饼图** | 上涨/下跌/平盘占比可视化 | 基于市场概况 |
-
-#### 3.3.2 数据获取策略
+### 2.6 LangGraph 图构建
 
 ```python
-def _fetch_index_daily(ts_code: str) -> dict | None:
-    """A 股指数：Tushare index_daily API"""
-    df = pro.index_daily(ts_code=ts_code, ...)
-    return {"close": ..., "change_pct": ...}
+def create_multi_agent_graph():
+    graph = StateGraph(MultiAgentState)
 
-def _generate_mock_index(name: str) -> dict:
-    """港股/美股：模拟数据（标注 [模拟] 标签）"""
-    return {"close": ..., "change_pct": ..., "is_mock": True}
+    graph.add_node("supervisor", supervisor_node)
+    graph.add_node("data_agent", data_node)
+    graph.add_node("analysis_agent", analysis_node)
+    graph.add_node("rag_agent", rag_node)
+
+    # 边定义
+    graph.add_edge(START, "supervisor")
+    graph.add_conditional_edges("supervisor", _route_next, {
+        "data_agent": "data_agent",
+        "analysis_agent": "analysis_agent",
+        "rag_agent": "rag_agent",
+        END: END,
+    })
+    # 所有子 Agent 执行完回到 Supervisor
+    graph.add_edge("data_agent", "supervisor")
+    graph.add_edge("analysis_agent", "supervisor")
+    graph.add_edge("rag_agent", "supervisor")
+
+    return graph.compile()
 ```
-
-- A 股指数（上证/深证/创业板）：通过 Tushare `index_daily` 获取真实数据
-- 境外指数（恒生/标普500）：生成模拟数据，界面标注 `[模拟]`
-- 市场概况：通过 Tushare `daily` 统计涨跌家数，回退到模拟数据
-
-#### 3.3.3 图表实现
-
-- **K 线图**：Matplotlib 手动绘制蜡烛图，红涨绿跌，暗色主题适配
-- **涨跌饼图**：Matplotlib `pie()` 函数，分离式显示（explode）
-
-### 3.4 用户与会话管理系统
-
-#### 3.4.1 数据模型
-
-```python
-class User(Base):
-    id: Integer (PK)
-    username: String (unique)
-    password_hash: String (bcrypt)
-    is_admin: Boolean
-    created_at: DateTime
-
-class Conversation(Base):
-    id: Integer (PK)
-    user_id: Integer (FK → users)
-    title: String
-    agent_type: String ('analysis' / 'chat')
-    created_at: DateTime
-    updated_at: DateTime
-
-class Message(Base):
-    id: Integer (PK)
-    conversation_id: Integer (FK → conversations)
-    role: String ('human' / 'ai')
-    content: Text
-    chart_paths: JSON (图表路径列表)
-    created_at: DateTime
-```
-
-#### 3.4.2 会话持久化流程
-
-```
-用户发送消息 → Agent 处理 → 保存 Message 到 DB
-                    ↓
-              流式输出响应
-                    ↓
-         保存 AI 回复 + 图表路径到 DB
-                    ↓
-         更新 Conversation 的 updated_at
-```
-
-### 3.5 股票数据可视化（AI 助手）
-
-#### 3.5.1 图表类型
-
-AI 助手对话中自动生成的图表：
-
-1. **K 线图**：包含 MA5/20/60 均线叠加，标注涨跌
-2. **趋势图**：收盘价 + MA5/20/60 趋势线 + 成交量
-3. **成交量分布图**：饼图展示成交量区间分布
-
-#### 3.5.2 图表管理
-
-- 图表存储在 `imgs/stock/` 目录
-- 文件名格式：`{code}_{timestamp}.png`
-- 会话中图表路径随消息持久化存储
 
 ---
 
-## 4. 关键技术亮点
+## 3. 工具调用机制与稳定性优化
 
-### 4.1 多 LLM 实例管理
+### 3.1 工具定义方式
 
-**场景**：本地有 embedding 模型但性能较弱，服务器有强大的 LLM 但无 embedding。
-
-**解决方案**：
-- LLM 调用走服务器（192.168.8.21:11434）
-- Embedding 调用走本地（127.0.0.1:11434）
-- 通过配置分离管理：
-
-```python
-# utils/setting.py
-llm_base_url: str = "http://192.168.8.21:11434"      # 服务器 LLM
-embedding_base_url: str = "http://127.0.0.1:11434"   # 本地 Embedding
-```
-
-### 4.2 Agent 预设配置系统
-
-支持 4 种预设模式，运行时切换：
-
-| 预设 | Temperature | Max Tokens | 适用场景 |
-|------|-------------|------------|----------|
-| default | 0.1 | 4096 | 日常对话 |
-| precise | 0 | 2048 | 精确分析 |
-| creative | 0.8 | 8192 | 创意生成 |
-| structure | 0.1 | 4096 | 结构化输出 |
-
-### 4.3 流式输出与记忆管理
-
-```python
-# 支持流式输出
-for chunk in agent.stream(input, config):
-    yield chunk
-
-# 短期记忆基于 LangGraph checkpointer
-checkpointer = MemorySaver()
-agent = create_agent(..., checkpointer=checkpointer)
-```
-
-### 4.4 RAG as Tool 模式
-
-Agent 自主决定何时调用知识库，而非每次查询都检索：
+使用 LangChain `@tool` 装饰器定义工具，每个工具自带文档字符串（Agent 通过 description 决定何时调用）：
 
 ```python
 @tool
-def search_knowledge_base(query: str, top_k: int = 3) -> str:
-    """当用户询问投资知识、技术指标或需要专业知识时调用"""
+def get_stock_daily_data(
+    ts_code: Annotated[str, "股票代码，如 '600519.SH'"],
+    days: Annotated[int, "获取数据的天数，默认120"] = 120
+) -> str:
+    """获取股票日线数据，返回包含技术指标的数据摘要。"""
+    try:
+        df = pro.daily(ts_code=ts_code, ...)
+        # 计算 MA5/20/60、波动率等技术指标
+        summary = format_summary(df)
+        return summary
+    except Exception as e:
+        return f"获取数据失败: {str(e)}"
+```
+
+**设计要点**：
+- `Annotated[str, "描述"]` 提供参数说明，LLM 通过 description 理解参数含义
+- 返回值为纯文本摘要（便于 LLM 理解和整合）
+- 异常捕获返回错误信息而非抛出异常（避免中断 Agent 循环）
+
+### 3.2 工具返回数据结构
+
+| 工具 | 返回格式 | 设计考量 |
+|------|----------|----------|
+| `get_stock_daily_data` | 纯文本摘要（含表格） | LLM 更易理解和整合文本数据 |
+| `get_stock_basic_info` | 纯文本（键值对） | 结构化信息便于引用 |
+| `plot_stock_charts` | 文本 + 文件路径 | 路径供前端解析展示图片 |
+| `search_knowledge_base` | 检索结果拼接文本 | 直接作为上下文供 LLM 参考 |
+
+```python
+# plot_stock_charts 返回格式示例
+return f"""图表已生成:
+- K线图: /path/to/kline_600519_20260424.png
+- 趋势图: /path/to/trend_600519_20260424.png
+- 饼图: /path/to/pie_600519_20260424.png
+"""
+```
+
+### 3.3 防止 Agent 陷入重复调用循环
+
+**三层防护机制**：
+
+**1. 提示词约束**（软约束）
+```
+不要连续重复调用同一个 Agent。
+```
+
+**2. 连续调用计数器**（硬约束）
+```python
+MAX_CONSECUTIVE_CALLS = 3
+
+if next_agent == last_agent:
+    call_count += 1
+else:
+    call_count = 1
+if call_count >= MAX_CONSECUTIVE_CALLS:
+    next_agent = "FINISH"  # 强制结束
+```
+
+**3. LangGraph 递归限制**（底层保护）
+```python
+config = {"recursion_limit": 10}  # 最多 10 轮循环
+result = graph.invoke(input, config=config)
+```
+
+### 3.4 工具调用失败降级
+
+子 Agent 内部的工具调用失败由 Agent 自身处理（ReAct 模式自动重试或换策略）：
+```python
+try:
+    result = agent_graph.invoke({"messages": messages})
+except Exception as e:
+    # 返回错误消息而非中断整个流程
+    return {"messages": [AIMessage(content=f"[{agent_name}] 执行出错: {str(e)}")]}
+```
+
+---
+
+## 4. 记忆管理
+
+### 4.1 短期记忆：基于 LangGraph Checkpointer
+
+**单 Agent 模式**：BaseAgent 使用 `InMemorySaver` 实现会话级短期记忆：
+
+```python
+checkpointer = InMemorySaver()
+agent = create_agent(
+    model=model,
+    tools=tools,
+    system_prompt=system_prompt,
+    checkpointer=checkpointer,  # 注入短期记忆
+)
+
+# 通过 thread_id 隔离不同会话
+config = {"configurable": {"thread_id": "user_123_conv_456"}}
+result = agent.invoke(input, config=config)
+```
+
+**关键机制**：
+- `InMemorySaver` 基于 LangGraph `MemorySaver`，在内存中存储对话状态
+- `thread_id` 是会话隔离的关键——不同 thread_id 对应完全独立的对话上下文
+- 用户切换会话时，前端传入不同的 `thread_id`，Agent 自动加载对应历史
+
+**多 Agent 模式**：
+- Supervisor 的 `MultiAgentState.messages` 包含完整对话历史（全局共享）
+- 子 Agent 不使用独立 checkpointer（避免状态碎片化）
+- 每个子 Agent 接收全局消息列表，处理后追加结果，实现 Agent 间上下文传递
+
+### 4.2 多 Agent 间记忆共享机制
+
+```
+state = MultiAgentState(
+    messages=[HumanMessage("分析茅台")],  # 全局共享
+    next_agent="data_agent",
+    call_count=1,
+    last_agent="data_agent"
+)
+
+# data_agent 执行后 → 追加 AIMessage 到 messages
+state["messages"] = [HumanMessage("分析茅台"), AIMessage("茅台数据: ...")]
+
+# Supervisor 看到完整历史（包括 data_agent 的输出）
+# → 决策: analysis_agent
+
+# analysis_agent 也看到完整历史
+# → 基于 data_agent 的数据生成图表和分析
+```
+
+### 4.3 会话持久化（业务层）
+
+除 LangGraph 的短期记忆外，业务层还将对话持久化到 PostgreSQL：
+
+```python
+# 消息存储时序
+user_input → Agent.invoke() → 持久化 user Message
+                             → Agent 处理
+                             → 持久化 AI Message + chart_paths
+```
+
+数据模型：
+```python
+class Message(Base):
+    id: Integer (PK)
+    conversation_id: Integer (FK)
+    role: String ('human' / 'ai')
+    content: Text
+    chart_paths: JSON  # 图表路径列表
+    created_at: DateTime
+```
+
+---
+
+## 5. RAG 集成
+
+### 5.1 架构：RAG as Tool
+
+Agent 自主决定何时调用知识库，而非每次查询都检索：
+
+```
+用户: "什么是 MACD？"
+    │
+    ▼
+Agent 推理: 用户在问投资概念 → 调用 search_knowledge_base
+    │
+    ▼
+ChromaDB 向量检索 → 返回相关文档片段
+    │
+    ▼
+Agent 整合检索结果 + 自身知识 → 生成回答
+```
+
+### 5.2 向量化流程
+
+```
+PDF/TXT 文档
+    │
+    ▼
+pypdf 解析 → 纯文本
+    │
+    ▼
+RecursiveCharacterTextSplitter
+    chunk_size=500, chunk_overlap=50
+    │
+    ▼
+OllamaEmbeddings (nomic-embed-text)
+    │
+    ▼
+ChromaDB 持久化存储
+    collection: "preset" (预置知识) / "user_{id}" (用户知识)
+```
+
+### 5.3 RAG 检索工具实现
+
+```python
+@tool
+def search_knowledge_base(
+    query: Annotated[str, "搜索查询"],
+    top_k: Annotated[int, "返回结果数量"] = 3,
+) -> str:
+    """搜索投资知识库"""
     collection = get_collection("preset")
     results = collection.query(query_texts=[query], n_results=top_k)
     return "\n\n".join(results["documents"][0])
 ```
 
----
+**设计要点**：
+- `@tool` docstring 描述使用场景，Agent 通过描述判断何时调用
+- 返回纯文本拼接结果，直接作为 LLM 上下文
+- 预置知识库和用户知识库集合隔离
 
-## 5. 数据库设计
+### 5.4 防止幻觉
 
-### 5.1 ER 图
-
-```
-┌─────────────┐       ┌─────────────────┐       ┌─────────────┐
-│    User     │ 1   n │  Conversation   │ 1   n │   Message   │
-├─────────────┤───────├─────────────────┤───────├─────────────┤
-│ id (PK)     │       │ id (PK)         │       │ id (PK)     │
-│ username    │       │ user_id (FK)    │       │ conversation│
-│ password_   │       │ title           │       │ _id (FK)    │
-│   hash      │       │ agent_type      │       │ role        │
-│ is_admin    │       │ created_at      │       │ content     │
-│ created_at  │       │ updated_at      │       │ chart_paths │
-└─────────────┘       └─────────────────┘       │ created_at  │
-                                                └─────────────┘
-```
-
-### 5.2 索引设计
-
-- `users.username`：唯一索引，加速登录查询
-- `conversations.user_id`：普通索引，加速会话列表查询
-- `messages.conversation_id`：普通索引，加速消息加载
+- **RAG as Tool 模式**：Agent 仅在需要时调用检索，而非所有查询都走 RAG
+- **提示词约束**：要求子 Agent 基于检索结果回答，避免编造
+- **检索结果注入**：检索到的原文片段直接作为上下文，不经过 LLM 改写
 
 ---
 
-## 6. 配置管理
+## 6. 单 Agent vs 多 Agent 对比
 
-### 6.1 环境变量
+| 维度 | 单 Agent (ReAct) | 多 Agent (Supervisor) |
+|------|------------------|----------------------|
+| **架构** | 一个 Agent 集成所有工具 | Supervisor 路由 + 专业子 Agent |
+| **工具选择** | LLM 自主决策 | Supervisor 路由 + 子 Agent 内部决策 |
+| **职责边界** | 模糊（一个 Agent 做所有事） | 清晰（数据/分析/知识各司其职） |
+| **可控性** | 低（无法控制调用顺序） | 高（Supervisor 控制执行流程） |
+| **调试难度** | 高（所有工具混在一起） | 低（每步路由可追踪） |
+| **性能** | 单次推理可能需多次工具调用 | 分步推理，每步专注单一任务 |
+| **扩展性** | 工具增多后 prompt 复杂度爆炸 | 新增 Agent 即可，不影响现有结构 |
+
+### 切换机制
 
 ```env
-# LLM 配置
-llm_model=ollama:qwen3.6:latest
-llm_base_url=http://192.168.8.21:11434
-llm_temperature=0.1
-llm_max_tokens=4096
-
-# Embedding 配置
-embedding_model=nomic-embed-text:latest
-embedding_base_url=http://127.0.0.1:11434
-
-# RAG 配置
-chunk_size=500
-chunk_overlap=50
-
-# 数据库
-DATABASE_URL=postgresql://postgres:123456@localhost:5432/stockagent
-
-# Tushare
-TUSHARE_TOKEN=your_token_here
+USE_MULTI_AGENT=true   # Supervisor + 子 Agent 模式
+USE_MULTI_AGENT=false  # 单 Agent ReAct 模式（默认）
 ```
 
-### 6.2 Pydantic Settings
-
+UI 层通过统一接口调用，无需修改代码：
 ```python
-class Settings(BaseSettings):
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+if settings.use_multi_agent:
+    agent = create_multi_agent_graph()    # CompiledStateGraph
+else:
+    agent = create_stock_analyst_agent()  # CompiledStateGraph
+
+# 两种模式返回相同的 invoke 接口
+result = agent.invoke({"messages": [HumanMessage(content=prompt)]})
 ```
 
 ---
 
-## 7. 部署方案
+## 7. 流式输出
 
-### 7.1 本地开发
+BaseAgent 封装了 LangGraph 的 `stream()` 方法，支持三种模式：
+
+```python
+def stream(self, input_text, stream_mode="messages"):
+    for chunk in self.graph.stream(input, stream_mode=stream_mode, config=config):
+        if stream_mode == "messages":
+            # chunk 是 (message, metadata) 元组
+            message, metadata = chunk
+            if isinstance(message, AIMessage) and message.content:
+                yield message.content
+        elif stream_mode == "updates":
+            # chunk 是状态更新字典
+            if "messages" in chunk:
+                yield chunk["messages"][-1].content
+```
+
+多 Agent 模式通过 `stream_mode="updates"` 追踪路由过程：
+```python
+for event in agent.stream(input, stream_mode="updates"):
+    if "supervisor" in event:
+        decision = event["supervisor"].get("next_agent", "")
+        # UI 显示: "正在调用 data_agent..."
+```
+
+---
+
+## 8. 技术栈
+
+| 层级 | 技术 | 用途 |
+|------|------|------|
+| **Agent 框架** | LangChain + LangGraph | Agent 编排、工具调用、状态图 |
+| **LLM** | Ollama (qwen3.6) | 本地部署大语言模型 |
+| **Embedding** | Ollama (nomic-embed-text) | 文本向量化 |
+| **向量数据库** | ChromaDB | 向量存储与相似度检索 |
+| **数据源** | Tushare Pro | A 股历史行情数据 |
+| **关系数据库** | PostgreSQL + SQLAlchemy | 会话持久化 |
+| **前端** | Streamlit | Web UI |
+| **图表** | Matplotlib | K 线图、趋势图生成 |
+| **日志** | Loguru | 高性能日志 |
+| **配置** | Pydantic Settings | 环境变量管理 |
+
+---
+
+## 9. 项目结构
+
+```
+stock_agent/
+├── agents/
+│   ├── base_agent.py           # BaseAgent 封装（invoke/stream/记忆）
+│   ├── stock_agent.py          # 单 Agent 工厂（ReAct 模式）
+│   ├── multi_agent.py          # 多 Agent 图（Supervisor + 子 Agent）
+│   ├── models/base_models.py   # LLM 模型工厂（预设配置）
+│   ├── prompts/system_prompt.py # 提示词系统
+│   └── tools/
+│       ├── stock_tools.py      # 股票数据/绘图工具
+│       ├── rag_tools.py        # RAG 检索工具
+│       └── time_tools.py       # 时间工具
+├── rag/
+│   ├── document_loader.py      # 文档加载
+│   ├── text_splitter.py        # 文本分块
+│   ├── embeddings.py           # Embedding 封装
+│   ├── vector_store.py         # ChromaDB 管理
+│   └── retriever.py            # 检索器
+├── uis/                        # UI 组件
+├── pages/                      # Streamlit 页面
+├── utils/                      # 配置/日志/数据库
+└── scripts/init_db.py          # 数据库初始化
+```
+
+---
+
+## 10. 部署
 
 ```bash
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate
-
 # 安装依赖
 pip install -r requirements.txt
 
 # 初始化数据库
 python scripts/init_db.py
 
-# 启动应用
+# 启动
 streamlit run app.py
 ```
 
-### 7.2 生产部署
-
-```bash
-# 使用 Uvicorn 部署（ASGI）
-uvicorn app:app --host 0.0.0.0 --port 8501
-
-# 或使用 Streamlit 原生部署
-streamlit run app.py --server.port 8501 --server.headless true
-```
-
 ---
 
-## 8. 项目难点与解决方案
-
-### 8.1 多 LLM 实例管理
-
-**难点**：需要同时使用远程 LLM 和本地 Embedding。
-
-**解决**：
-- 设计了双 URL 配置（`llm_base_url` + `embedding_base_url`）
-- LLM 调用使用 `ChatOllama`，Embedding 调用使用 `OllamaEmbeddings`
-- 分别指向不同服务地址
-
-### 8.2 Agent 工具调用与记忆
-
-**难点**：需要 Agent 自主决策调用工具，同时保持多轮对话记忆。
-
-**解决**：
-- 使用 LangChain `create_agent` 的 ReAct 模式
-- 基于 `MemorySaver` 实现会话级记忆
-- 通过 `config={"configurable": {"thread_id": session_id}}` 隔离不同会话
-
-### 8.3 RAG 检索质量
-
-**难点**：确保检索结果的相关性和准确性。
-
-**解决**：
-- 采用 `RecursiveCharacterTextSplitter` 智能分块
-- 配置合理的 `chunk_size=500` 和 `chunk_overlap=50`
-- 使用 `nomic-embed-text` 本地 Embedding 模型
-- 支持用户自定义知识库扩展
-
-### 8.4 流式输出与 UI 交互
-
-**难点**：Streamlit 的页面刷新机制与 Agent 流式输出冲突。
-
-**解决**：
-- 使用 Streamlit 的 `st.write_stream()` 接收生成器
-- Agent 的 `stream()` 方法返回迭代器
-- 图表在流式输出完成后一次性渲染
-
----
-
-## 9. 项目成果
-
-1. **功能完整性**：实现了从用户管理、数据获取、AI 分析到知识库检索的完整链路
-2. **技术深度**：深入应用了 Agent、RAG、向量数据库等 AI 工程核心技术
-3. **工程规范**：模块化设计、配置管理、日志系统、数据库 ORM 等工程实践
-4. **数据可视化**：独立仪表盘 + AI 生成图表的双层可视化体系
-5. **可扩展性**：预设配置系统、工具插件化设计，支持未来功能扩展
-
----
-
-## 10. 未来规划
-
-### 10.1 短期优化
-- [ ] 仪表盘接入更多实时数据源（东方财富、新浪财经）
-- [ ] 添加用户上传文档的向量化进度条
-- [ ] 支持更多文档格式（Word、Markdown）
-- [ ] 优化 Agent 推理速度
-
-### 10.2 中期扩展
-- [ ] 集成实时行情数据（WebSocket 推送）
-- [ ] 添加多模态支持（图表理解）
-- [ ] 实现 Agent 之间的协作（多 Agent 系统）
-
-### 10.3 长期目标
-- [ ] 支持多市场（美股、港股）
-- [ ] 构建量化策略回测系统
-- [ ] 部署为 SaaS 服务
-
----
-
-## 11. 联系方式
-
-- **GitHub**：[your-github-url]
-- **邮箱**：[your-email@example.com]
-- **项目演示**：[demo-url]
+**联系方式**
+- GitHub: [your-github-url]
+- 邮箱: [your-email@example.com]

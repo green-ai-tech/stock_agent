@@ -10,7 +10,8 @@ from typing import Annotated, Optional
 from langchain_core.tools import tool
 import tushare as ts
 
-from utils.logger import logger
+from utils.logger import get_logger
+logger = get_logger(__name__)
 from utils.setting import settings
 from utils.paths import get_stock_charts_dir
 from utils.plot_helper import setup_matplotlib_style
@@ -30,7 +31,8 @@ def get_stock_daily_data(
 ) -> str:
     """获取股票日线数据，返回包含技术指标的数据摘要"""
     try:
-        logger.info(f"开始获取股票数据: {ts_code}, 天数: {days}")
+        logger.info(f"[Tool:get_stock_daily_data] 📊 开始获取数据: ts_code={ts_code}, days={days}")
+        t0 = datetime.now()
         end_date = datetime.now().strftime('%Y%m%d')
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
         

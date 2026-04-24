@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     #====================4. 数据库的配置 ==========================
     DATABASE_URL: str = Field(default="postgresql://postgres:123456@localhost:5432/stockagent",description="连接数据库URL")
 
-    #====================5. 股票分析配置==============================
+    #====================5. 多 Agent 配置==============================
+    use_multi_agent: bool = Field(default=False, description="是否启用多 Agent 模式（Supervisor + 子 Agent）")
+
+    #====================6. 股票分析配置==============================
     tushare_token: str          = Field(description="Tushare 股票数据接口 Token")
     stock_analysis_days: int    = Field(default=120,description="分析天数")
     stock_charts_dpi: int       = Field(default=150,description="图像分辨率")
