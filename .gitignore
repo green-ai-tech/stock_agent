@@ -1,26 +1,37 @@
-# Python 编译缓存（屏蔽所有.pyc文件）
-**/__pycache__/*
-*/__pycache__/*
+# Python 编译缓存
+__pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# 环境变量、虚拟环境
-.env
-venv/
+# 虚拟环境
 .venv/
+venv/
 env/
 
+# 环境变量（含敏感信息）
+.env
 
-# Streamlit 缓存
+# Streamlit
 .streamlit/
 
-# 系统隐藏文件
+# 系统文件
 .DS_Store
 Thumbs.db
 
-#日志
+# 日志
+logs/
 *.log
 
+# 生成的图表和数据缓存
+imgs/stock/
+**/.data_cache/
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Kilo
 *.kilo

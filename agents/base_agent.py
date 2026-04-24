@@ -293,15 +293,6 @@ class BaseAgent:
             logger.exception(f"Agent 流式执行失败: {error_detail}")
             yield f"\n\n抱歉，处理您的请求时出现错误: {error_detail}"
 
-PRESET_CONFIGS = {
-    # ... 其他预设 ...
-    "structure": {
-        "model_name": "ollama:qwen3.5:9b",
-        "temperature": 0.0,
-        "description": "结构化输出需要准确稳定的模型",
-    },
-}
-
 #工厂生成对象
 def create_base_agent(
     model: Optional[Union[str, BaseChatModel]] = None,

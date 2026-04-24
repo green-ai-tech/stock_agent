@@ -1,6 +1,5 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, JSON, Text
+from sqlalchemy.orm import sessionmaker, scoped_session, DeclarativeBase, relationship
 from utils.setting import settings
 import datetime
 
@@ -20,7 +19,8 @@ def get_db_session():
     return scoped_session(SessionLocal)
 
 # ORM 基类
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 class User(Base):
     __tablename__ = "users"
@@ -31,6 +31,35 @@ class User(Base):
     email = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
+
+    conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="新对话")
+    agent_type = Column(String(50), nullable=False, default="base")  # 'base' | 'stock'
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="conversations")
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan", order_by="Message.id")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # 'user' | 'assistant'
+    content = Column(Text, nullable=False)
+    chart_paths = Column(JSON, nullable=True)  # stock agent 的图表路径 {"kline": "...", ...}
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    conversation = relationship("Conversation", back_populates="messages")
 
 # 建表函数（供初始化脚本调用）
 def create_tables():

@@ -1,7 +1,7 @@
 import streamlit as st
 from agents import create_base_agent
 from utils import get_logger
-from utils.auth import check_login
+from utils.auth import check_login, get_user_by_username
 
 logger = get_logger(__name__)
 
@@ -68,7 +68,7 @@ with center:
         
         col1, col2 = st.columns(2, gap="small")
         with col1:
-            submitted = st.form_submit_button("登录", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("登录", type="primary", width='stretch')
         # 注意：第二个按钮不能在表单内部作为 form_submit_button，所以我们留空 col2
         with col2:
             # 这里放一个空占位，让布局平衡
@@ -80,6 +80,10 @@ with center:
             elif check_login(username, password):
                 st.session_state.logged_in = True
                 st.session_state.username = username
+                # 存储 user_id 供会话持久化使用
+                user = get_user_by_username(username)
+                if user:
+                    st.session_state.user_id = user.id
                 logger.success(f"登录成功，用户名：{username}")
                 st.success("登录成功！正在跳转...")
                 agent = create_base_agent()
@@ -92,7 +96,7 @@ with center:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<div style='text-align: center; margin-top: 0.5rem;'>还没有账号？</div>", unsafe_allow_html=True)
-        if st.button("📝 注册新账号", use_container_width=True, type="secondary"):
+        if st.button("📝 注册新账号", width='stretch', type="secondary"):
             st.switch_page("pages/register.py")
 
 st.markdown("---")

@@ -33,7 +33,7 @@ def admin_users_page():
                 "注册时间": u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
                 "最后登录": u.last_login.strftime("%Y-%m-%d %H:%M:%S") if u.last_login else "从未"
             })
-        st.dataframe(user_data, use_container_width=True)
+        st.dataframe(user_data, width='stretch')
         
         st.divider()
         st.subheader("重置用户密码")

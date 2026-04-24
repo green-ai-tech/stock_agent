@@ -1,6 +1,8 @@
 import streamlit as st
 from utils.auth import create_user
 
+st.set_page_config(page_title="注册", page_icon="📝", layout="centered")
+
 def register_page():
     st.title("新用户注册")
     
