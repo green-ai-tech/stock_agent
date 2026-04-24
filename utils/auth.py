@@ -2,8 +2,6 @@ import bcrypt
 from utils.db import get_db_session, User
 from utils.logger import logger
 from datetime import datetime
-from utils.db import get_db_session, User
-from utils.logger import logger
 
 def hash_password(plain_password: str) -> str:
     """对明文密码进行 bcrypt 哈希"""

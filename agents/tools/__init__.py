@@ -7,7 +7,7 @@ BASIC_TOOLS = [
 
 __all__ = [
     "get_current_time",
-    "get_current_time",
+    "get_current_date",
     #工具分组
     "BASIC_TOOLS"
 ]

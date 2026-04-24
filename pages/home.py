@@ -73,7 +73,6 @@ with st.sidebar:
         st.caption(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", text_alignment="center")
 
 # 主内容区
-
 if st.session_state.page == "股市数据分析":
     ui_stock_analysis()
     
@@ -85,5 +84,3 @@ elif st.session_state.page == "股市智慧助手":
         
 elif st.session_state.page == "模型参数设置":
     ui_setting()
-    
-

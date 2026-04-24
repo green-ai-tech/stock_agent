@@ -17,6 +17,14 @@ PROJECT_ROOT       = find_project_root()
 ENV_FILE_PATH      = os.path.join(PROJECT_ROOT, ".env")
 VECTOR_STORE_PATH  = os.path.join(PROJECT_ROOT, "data")
 LOG_PATH           = os.path.join(PROJECT_ROOT, "logs/stock_agent.log")
+STOCK_CHARTS_DIR   = os.path.join(PROJECT_ROOT, "imgs/stock")
+
+
+def get_stock_charts_dir() -> Path:
+    """获取股票图表保存目录（imgs/stock）"""
+    charts_dir = Path(PROJECT_ROOT) / "imgs" / "stock"
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    return charts_dir
 
 
 #=======================路径测试============================

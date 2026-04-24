@@ -73,31 +73,33 @@ def get_chat_model(
         raise  # 转移异常，交给其他调用者继续处理异常
 
 # 预定义的模型配置
+from utils.setting import settings
+
 PRESET_CONFIGS = {
     "default": {
-        "model_name": "ollama:qwen3.5:9b",
+        "model_name": settings.llm_model,   # 动态读取
         "temperature": 0.7,
-        "description": "默认模型，平衡性能和成本",
+        "description": "默认模型",
     },
     "fast": {
-        "model_name": "ollama:qwen3:4b",
+        "model_name": settings.llm_model,   # 或单独指定一个更快的模型
         "temperature": 0.7,
-        "description": "快速模型，适合简单任务",
+        "description": "快速模型",
     },
     "precise": {
-        "model_name": "ollama:qwen3.5:9b",
+        "model_name": settings.llm_model,
         "temperature": 0.3,
-        "description": "精确模型，适合需要准确性的任务",
+        "description": "精确模型",
     },
     "creative": {
-        "model_name": "ollama:qwen3.5:9b",
+        "model_name": settings.llm_model,
         "temperature": 1.0,
-        "description": "创意模型，适合需要创造性的任务",
+        "description": "创意模型",
     },
     "structure": {
-        "model_name": "ollama:qwen3.5:9b",
+        "model_name": settings.llm_model,
         "temperature": 0.0,
-        "description": "结构化输出需要准确稳定的模型",
+        "description": "结构化输出模型",
     },
 }
 
