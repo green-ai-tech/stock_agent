@@ -22,7 +22,7 @@
     ▼
 ┌──────────────┐
 │  Supervisor  │ ← LLM 路由决策（temperature=0）
-│  (Router)    │   输出 JSON: {"next": "data_agent"|"analysis_agent"|"rag_agent"|"FINISH"}
+│  (Router)    │   结构化输出: RouteDecision(next="data_agent"|"analysis_agent"|"rag_agent"|"FINISH")
 └──────┬───────┘
        │
        ├────────────────────┬───────────────────┐
@@ -30,8 +30,8 @@
 ┌──────────────┐   ┌────────────────┐   ┌──────────────┐
 │  data_agent  │   │ analysis_agent │   │  rag_agent   │
 │  (ReAct)     │   │   (ReAct)      │   │   (ReAct)    │
-│  工具:       │   │   工具:        │   │   工具:      │
-│  股票数据API │   │   图表生成     │   │   向量检索   │
+│  工具:        │   │   工具:        │   │   工具:       │
+│  股票数据API  │    │   图表生成     │   │   向量检索     │
 └──────────────┘   └────────────────┘   └──────────────┘
        │                    │                   │
        └────────────────────┼───────────────────┘
@@ -53,9 +53,9 @@
 用户: "分析一下贵州茅台600519的技术走势"
     │
     ▼
-Supervisor (LLM)
-    │  System Prompt 描述各 Agent 能力 + 输出格式
-    │  LLM 分析用户意图 → {"next": "data_agent"}
+Supervisor (LLM + with_structured_output)
+    │  System Prompt 描述各 Agent 能力
+    │  LLM 分析用户意图 → RouteDecision(next="data_agent")
     │
     ▼
 data_agent (create_agent)
@@ -71,9 +71,9 @@ data_agent (create_agent)
     │    Final Answer: [整合数据输出]
     │
     ▼
-Supervisor (LLM)
+Supervisor (LLM + with_structured_output)
     │  看到 data_agent 的输出
-    │  决策: {"next": "analysis_agent"}
+    │  决策: RouteDecision(next="analysis_agent")
     │
     ▼
 analysis_agent (create_agent)
@@ -85,9 +85,9 @@ analysis_agent (create_agent)
     │    Final Answer: [技术分析报告 + 图表路径]
     │
     ▼
-Supervisor (LLM)
+Supervisor (LLM + with_structured_output)
     │  看到完整结果（数据+图表+分析）
-    │  决策: {"next": "FINISH"}
+    │  决策: RouteDecision(next="FINISH")
     │
     ▼
 最终输出: 数据概览 + 技术分析 + 图表
@@ -95,35 +95,45 @@ Supervisor (LLM)
 
 ### 2.3 Supervisor 路由实现
 
-Supervisor 不使用 ReAct 工具调用，而是 **纯 LLM 决策节点**（减少推理开销）：
+Supervisor 不使用 ReAct 工具调用，而是 **纯 LLM 结构化输出决策节点**（减少推理开销，硬约束输出格式）：
+
+#### 2.3.1 路由决策模型（Pydantic 硬约束）
 
 ```python
-SUPERVISOR_SYSTEM_PROMPT = """\
-你是一个任务路由器，负责将用户请求分配给最合适的专业 Agent。
+from pydantic import BaseModel, Field
+from typing import Literal
 
-可用 Agent：
-- data_agent：获取股票行情数据和基础信息
-- analysis_agent：生成图表和技术分析报告
-- rag_agent：从知识库检索专业知识
+class RouteDecision(BaseModel):
+    """Supervisor 路由决策的结构化输出，LLM 必须返回此模型"""
+    next: Literal["data_agent", "analysis_agent", "rag_agent", "FINISH"] = Field(
+        description="下一步应调度的 Agent 名称，如无需进一步处理则选择 FINISH"
+    )
+```
 
-规则：
-1. 根据用户问题的核心意图选择最合适的 Agent
-2. 如果前一个 Agent 的输出已完整回答问题，输出 FINISH
-3. 不要连续重复调用同一个 Agent
+- `Literal` 约束 `next` 只能是 4 个枚举值，非法值直接 `ValidationError`
+- Pydantic Schema 自动注入 LLM，不需要在提示词中写输出格式说明
 
-输出格式（严格 JSON）：
-{"next": "data_agent"} 或 {"next": "analysis_agent"} 或 {"next": "rag_agent"} 或 {"next": "FINISH"}
-"""
+#### 2.3.2 路由节点构建
 
-def _build_supervisor_node(llm):
+```python
+def _build_supervisor_node(llm: BaseChatModel):
+    structured_llm = llm.with_structured_output(RouteDecision)  # 硬约束
+
     def supervisor_node(state: MultiAgentState) -> dict:
         messages = state["messages"]
         call_count = state.get("call_count", 0)
         last_agent = state.get("last_agent", "")
 
-        # LLM 路由决策
-        response = llm.invoke([SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT), *messages])
-        next_agent = _parse_supervisor_response(response.content)
+        supervisor_messages = [
+            SystemMessage(content=get_multi_agent_prompt("supervisor")),
+            *messages,
+        ]
+
+        try:
+            decision: RouteDecision = structured_llm.invoke(supervisor_messages)
+            next_agent = decision.next  # 强类型，不可能出错
+        except Exception:
+            next_agent = "FINISH"  # 结构化输出失败时安全降级
 
         # 连续调用限制（防死循环）
         if next_agent == last_agent:
@@ -137,24 +147,62 @@ def _build_supervisor_node(llm):
     return supervisor_node
 ```
 
-**Supervisor 输出解析**（兼容 JSON 和纯文本，提升鲁棒性）：
+#### 2.3.3 路由稳定性：四层保障
+
+| 层级 | 机制 | 类型 | 说明 |
+|------|------|------|------|
+| **第 1 层** | System Prompt | 软约束 | 明确描述各 Agent 职责和路由规则，引导 LLM 做出正确决策 |
+| **第 2 层** | `with_structured_output(RouteDecision)` | 硬约束 | Pydantic Schema 强制 LLM 输出合法枚举值，幻觉 Agent 名直接拒绝 |
+| **第 3 层** | 连续调用计数器 | 硬约束 | 同一 Agent 最多连续调用 3 次，超限强制 FINISH |
+| **第 4 层** | `_route_next` 路由表 | 硬约束 | 白名单映射，仅允许 3 个子 Agent + FINISH，未知目标回退到 END |
 
 ```python
-def _parse_supervisor_response(text: str) -> str:
-    """优先解析 JSON，回退到关键词匹配"""
-    json_match = re.search(r'\{[^}]*"next"\s*:\s*"[^"]*"[^}]*\}', text)
-    if json_match:
-        data = json.loads(json_match.group())
-        candidate = data.get("next", "FINISH")
-        if candidate in VALID_AGENTS:
-            return candidate
-
-    # 回退：关键词匹配
-    for agent_name in ["data_agent", "analysis_agent", "rag_agent"]:
-        if agent_name in text.lower():
-            return agent_name
-    return "FINISH"
+def _route_next(state: MultiAgentState) -> str:
+    """条件边：路由表白名单（第 4 层保障）"""
+    next_agent = state.get("next_agent", "FINISH")
+    if next_agent == "FINISH":
+        return END
+    node_map = {
+        "data_agent": "data_agent",
+        "analysis_agent": "analysis_agent",
+        "rag_agent": "rag_agent",
+    }
+    target = node_map.get(next_agent)
+    if target is None:
+        logger.warning(f"[Router] 未知的 Agent: {next_agent}，回退到 FINISH")
+        return END
+    return target
 ```
+
+四层协同工作流程：
+```
+LLM 推理 → Prompt 引导 → 结构化输出 → Literal 校验 → 计数器检查 → 路由表映射
+  (软)        (软)          (硬)         (硬)          (硬)        (硬)
+```
+
+#### 2.3.4 提示词（不再需要输出格式说明）
+
+```python
+SUPERVISOR_SYSTEM_PROMPT = """\
+你是一个任务路由器，负责将用户请求分配给最合适的专业 Agent。
+
+## 可用 Agent
+
+- **data_agent**：获取股票行情数据（日线、K 线）和基础信息（行业、市值、PE 等）。
+- **analysis_agent**：生成股票分析图表（K 线图、趋势图、饼图）并提供技术分析报告。
+- **rag_agent**：从投资知识库中检索专业知识。
+- **FINISH**：当已有信息足以回答用户问题，或用户只是闲聊/打招呼时选择。
+
+## 路由规则
+
+1. 根据用户问题的**核心意图**选择最合适的 Agent
+2. 如果前一个 Agent 的输出已经完整回答了用户问题，选择 FINISH
+3. 不要连续重复调用同一个 Agent（系统会强制限制）
+4. 如果用户只是打招呼、闲聊或问题与股票无关，直接选择 FINISH
+5. 复杂任务可以分步调用多个 Agent（先获取数据 → 再分析 → 再检索补充知识）"""
+```
+
+相比改造前，提示词删除了 14 行 JSON 格式说明和"当前对话"引导，Schema 约束由 `with_structured_output` 自动处理。
 
 ### 2.4 子 Agent 创建方式
 
@@ -265,29 +313,25 @@ return f"""图表已生成:
 
 ### 3.3 防止 Agent 陷入重复调用循环
 
-**三层防护机制**：
+路由稳定性由四层保障机制实现（详见 [2.3.3 路由稳定性](#233-路由稳定性四层保障)），简要回顾：
 
-**1. 提示词约束**（软约束）
-```
-不要连续重复调用同一个 Agent。
-```
+| 层级 | 机制 | 类型 |
+|------|------|------|
+| **第 1 层** | System Prompt 路由规则 | 软约束 |
+| **第 2 层** | `with_structured_output(RouteDecision)` | 硬约束（Pydantic Literal 校验） |
+| **第 3 层** | 连续调用计数器（MAX=3） | 硬约束 |
+| **第 4 层** | `_route_next` 路由表白名单 | 硬约束 |
 
-**2. 连续调用计数器**（硬约束）
 ```python
 MAX_CONSECUTIVE_CALLS = 3
 
+# 第 3 层：连续调用计数器
 if next_agent == last_agent:
     call_count += 1
 else:
     call_count = 1
 if call_count >= MAX_CONSECUTIVE_CALLS:
     next_agent = "FINISH"  # 强制结束
-```
-
-**3. LangGraph 递归限制**（底层保护）
-```python
-config = {"recursion_limit": 10}  # 最多 10 轮循环
-result = graph.invoke(input, config=config)
 ```
 
 ### 3.4 工具调用失败降级
@@ -477,6 +521,8 @@ result = agent.invoke({"messages": [HumanMessage(content=prompt)]})
 
 ## 7. 流式输出
 
+### 7.1 后端：LangGraph 流式接口
+
 BaseAgent 封装了 LangGraph 的 `stream()` 方法，支持三种模式：
 
 ```python
@@ -493,13 +539,51 @@ def stream(self, input_text, stream_mode="messages"):
                 yield chunk["messages"][-1].content
 ```
 
-多 Agent 模式通过 `stream_mode="updates"` 追踪路由过程：
+### 7.2 前端：Streamlit 流式渲染
+
+UI 层使用 `st.write_stream()` 接收生成器，逐 token 渲染：
+
 ```python
-for event in agent.stream(input, stream_mode="updates"):
-    if "supervisor" in event:
-        decision = event["supervisor"].get("next_agent", "")
-        # UI 显示: "正在调用 data_agent..."
+def _stream_response(agent, prompt: str):
+    from langchain.messages import AIMessage, AIMessageChunk, ToolMessage
+    collected_tool_messages = []
+
+    for chunk in agent.stream(
+        {"messages": [{"role": "user", "content": prompt}]},
+        stream_mode="messages",
+    ):
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            message, metadata = chunk
+        elif isinstance(chunk, BaseMessage):
+            message = chunk
+        else:
+            continue
+
+        if isinstance(message, ToolMessage):
+            collected_tool_messages.append(message)
+            continue
+
+        if isinstance(message, (AIMessage, AIMessageChunk)) and message.content:
+            yield message.content
+
+    st.session_state["_tool_messages"] = collected_tool_messages
+
+# 前端调用
+final_text = st.write_stream(_stream_response(agent, prompt))
 ```
+
+### 7.3 流式配置
+
+需在 `.env` 中开启模型流式输出：
+
+```env
+LLM_STREAMING=True
+```
+
+- `True`：逐 token 流式输出（真实打字效果）
+- `False`：仍可流式调用，但以完整消息为单位返回（非逐 token）
+
+单 Agent 和多 Agent 模式均支持流式输出，底层使用相同的 `CompiledStateGraph.stream()` 接口。
 
 ---
 
@@ -529,7 +613,9 @@ stock_agent/
 │   ├── stock_agent.py          # 单 Agent 工厂（ReAct 模式）
 │   ├── multi_agent.py          # 多 Agent 图（Supervisor + 子 Agent）
 │   ├── models/base_models.py   # LLM 模型工厂（预设配置）
-│   ├── prompts/system_prompt.py # 提示词系统
+│   ├── prompts/
+│   │   ├── __init__.py         # 导出统一 API
+│   │   └── system_prompt.py    # 全部提示词（SYSTEM_PROMPTS + MULTI_AGENT_PROMPTS + 工厂函数）
 │   └── tools/
 │       ├── stock_tools.py      # 股票数据/绘图工具
 │       ├── rag_tools.py        # RAG 检索工具
@@ -540,9 +626,11 @@ stock_agent/
 │   ├── embeddings.py           # Embedding 封装
 │   ├── vector_store.py         # ChromaDB 管理
 │   └── retriever.py            # 检索器
-├── uis/                        # UI 组件
+├── uis/
+│   └── ui_ai_assistant.py      # AI 对话 UI（流式输出）
 ├── pages/                      # Streamlit 页面
 ├── utils/                      # 配置/日志/数据库
+├── .env                        # 环境变量配置
 └── scripts/init_db.py          # 数据库初始化
 ```
 

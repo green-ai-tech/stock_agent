@@ -5,6 +5,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # 必须在 import matplotlib.pyplot 之前设置后端
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta

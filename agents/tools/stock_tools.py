@@ -3,6 +3,8 @@
 """
 import os
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # 必须在 import matplotlib.pyplot 之前设置后端，避免 macOS 原生后端导致保存图片失败
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta

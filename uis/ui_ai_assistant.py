@@ -49,6 +49,84 @@ def _ensure_conversation():
         st.session_state.conv_id = conv.id
 
 
+def _stream_response(agent, prompt: str):
+    """
+    流式调用 Agent，yield 文本片段给 st.write_stream。
+
+    Returns:
+        generator yielding str chunks
+    """
+    from langchain.messages import AIMessage, AIMessageChunk, ToolMessage
+    from langchain_core.messages import BaseMessage
+
+    collected_tool_messages = []
+
+    try:
+        for chunk in agent.stream(
+            {"messages": [{"role": "user", "content": prompt}]},
+            stream_mode="messages",
+        ):
+            # chunk 可能是 (message, metadata) 元组，或直接是 message
+            if isinstance(chunk, tuple) and len(chunk) == 2:
+                message, metadata = chunk
+            elif isinstance(chunk, BaseMessage):
+                message = chunk
+            else:
+                continue
+
+            # 收集工具返回（用于解析图表路径）
+            if isinstance(message, ToolMessage):
+                collected_tool_messages.append(message)
+                continue
+
+            # 只 yield AI 消息的内容片段
+            if isinstance(message, (AIMessage, AIMessageChunk)) and message.content:
+                yield message.content
+
+    except Exception as e:
+        logger.error(f"流式调用失败: {e}", exc_info=True)
+        yield f"\n\n分析出错：{str(e)}"
+
+    # 把收集到的工具消息存入 session_state，供后续解析图表
+    st.session_state["_tool_messages"] = collected_tool_messages
+
+
+def _extract_chart_paths(tool_messages, final_text: str) -> dict:
+    """从工具返回和最终文本中解析图表路径"""
+    chart_paths = {}
+    tool_message_found = False
+
+    # 从工具消息中解析
+    for msg in tool_messages:
+        if hasattr(msg, "content") and "图表已生成" in msg.content:
+            tool_message_found = True
+            for line in msg.content.split("\n"):
+                if line.strip().startswith("-") and ": " in line:
+                    parts = line.split(": ", 1)
+                    if len(parts) == 2:
+                        chart_type = parts[0].strip("- ").strip()
+                        full_path = Path(parts[1].strip())
+                        if full_path.exists():
+                            chart_paths[chart_type] = str(full_path)
+                        else:
+                            logger.warning(f"图表文件不存在: {full_path}")
+
+    # 备用正则匹配
+    if not chart_paths and final_text:
+        pattern = r'(kline|trend|pie)_[^_\s]+_\d{8}_\d{6}\.png'
+        matches = re.findall(pattern, final_text)
+        if matches:
+            type_names = {"kline": "K线图", "trend": "趋势图", "pie": "饼图"}
+            for match in matches:
+                chart_type_key = match.split('_')[0]
+                chart_title = type_names.get(chart_type_key, "图表")
+                full_path = get_stock_charts_dir() / match
+                if full_path.exists():
+                    chart_paths[chart_title] = str(full_path)
+
+    return chart_paths, tool_message_found
+
+
 def ui_ai_assistant():
     apply_chart_styling()
 
@@ -121,106 +199,53 @@ def ui_ai_assistant():
             add_message(st.session_state.conv_id, "user", prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("正在分析中，请稍候..."):
-                try:
-                    agent = st.session_state.stock_agent
-                    response = agent.invoke({
-                        "messages": [{"role": "user", "content": prompt}]
-                    })
+            st.session_state["_tool_messages"] = []
 
-                    messages = response.get("messages", [])
+            agent = st.session_state.stock_agent
 
-                    # 提取 AI 最终回复
-                    final_text = ""
-                    for msg in reversed(messages):
-                        if hasattr(msg, "content") and msg.content and getattr(msg, "type", "") == "ai":
-                            final_text = msg.content
-                            break
+            # 流式输出
+            final_text = st.write_stream(
+                _stream_response(agent, prompt)
+            )
 
-                    # 提取图表路径
-                    chart_paths = {}
-                    tool_message_found = False
-                    for msg in messages:
-                        if hasattr(msg, "type") and msg.type == "tool":
-                            tool_message_found = True
-                            msg_content = msg.content
-                            if "图表已生成" in msg_content:
-                                lines = msg_content.split("\n")
-                                for line in lines:
-                                    if line.strip().startswith("-") and ": " in line:
-                                        parts = line.split(": ", 1)
-                                        if len(parts) == 2:
-                                            chart_type = parts[0].strip("- ").strip()
-                                            file_path = parts[1].strip()
-                                            full_path = Path(file_path)
-                                            if full_path.exists():
-                                                chart_paths[chart_type] = str(full_path)
-                                            else:
-                                                logger.warning(f"图表文件不存在: {full_path}")
+            # st.write_stream 返回最终累积的完整文本
+            if not final_text:
+                st.warning("模型未返回任何内容，请检查后端日志")
+                final_text = "无响应"
 
-                    # 备用正则
-                    if not chart_paths and final_text:
-                        pattern = r'(kline|trend|pie)_[^_\s]+_\d{8}_\d{6}\.png'
-                        matches = re.findall(pattern, final_text)
-                        if matches:
-                            type_names = {"kline": "K线图", "trend": "趋势图", "pie": "饼图"}
-                            for match in matches:
-                                chart_type_key = match.split('_')[0]
-                                chart_title = type_names.get(chart_type_key, "图表")
-                                full_path = get_stock_charts_dir() / match
-                                if full_path.exists():
-                                    chart_paths[chart_title] = str(full_path)
+            # 解析图表路径
+            tool_messages = st.session_state.get("_tool_messages", [])
+            chart_paths, tool_message_found = _extract_chart_paths(tool_messages, final_text)
 
-                    if not chart_paths and tool_message_found:
-                        st.info("📉 工具已调用，但未能解析出图表路径。请检查调试信息。")
-                    elif not chart_paths:
-                        st.info("📉 本次分析未生成图表（可能数据不足或模型未调用绘图工具）。")
+            if not chart_paths and tool_message_found:
+                st.info("📉 工具已调用，但未能解析出图表路径。请检查调试信息。")
+            elif not chart_paths:
+                st.info("📉 本次分析未生成图表（可能数据不足或模型未调用绘图工具）。")
 
-                    # 显示图表
-                    if chart_paths:
-                        st.subheader("📊 技术图表")
-                        for title, path in chart_paths.items():
-                            with st.container():
-                                st.markdown(f'<div class="chart-card">', unsafe_allow_html=True)
-                                st.markdown(f'<div class="chart-title">{title}</div>', unsafe_allow_html=True)
-                                st.image(path, width='stretch')
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            st.markdown("<br>", unsafe_allow_html=True)
+            # 显示图表
+            if chart_paths:
+                st.subheader("📊 技术图表")
+                for title, path in chart_paths.items():
+                    with st.container():
+                        st.markdown(f'<div class="chart-card">', unsafe_allow_html=True)
+                        st.markdown(f'<div class="chart-title">{title}</div>', unsafe_allow_html=True)
+                        st.image(path, width='stretch')
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
 
-                    # 显示分析文本
-                    if final_text:
-                        st.markdown(final_text)
-                    else:
-                        st.warning("模型未返回任何内容，请检查后端日志")
-                        final_text = "无响应"
+            # 保存到 session
+            assistant_content = {
+                "text": final_text,
+                "charts": chart_paths,
+                "metrics": {},
+            }
+            st.session_state.stock_messages.append({"role": "assistant", "content": assistant_content})
 
-                    assistant_content = {
-                        "text": final_text,
-                        "charts": chart_paths,
-                        "metrics": {},
-                    }
-                    st.session_state.stock_messages.append({"role": "assistant", "content": assistant_content})
-
-                    # 持久化 AI 回复
-                    if st.session_state.get("conv_id"):
-                        add_message(
-                            st.session_state.conv_id,
-                            "assistant",
-                            final_text,
-                            chart_paths=chart_paths if chart_paths else None,
-                        )
-
-                except Exception as e:
-                    logger.error(f"调用 Agent 失败: {e}", exc_info=True)
-                    error_msg = f"分析出错：{str(e)}"
-                    st.error(error_msg)
-                    assistant_content = {
-                        "text": error_msg,
-                        "charts": {},
-                        "metrics": {},
-                    }
-                    st.session_state.stock_messages.append({"role": "assistant", "content": assistant_content})
-
-                    # 持久化错误消息
-                    if st.session_state.get("conv_id"):
-                        add_message(st.session_state.conv_id, "assistant", error_msg)
+            # 持久化
+            if st.session_state.get("conv_id"):
+                add_message(
+                    st.session_state.conv_id,
+                    "assistant",
+                    final_text,
+                    chart_paths=chart_paths if chart_paths else None,
+                )
