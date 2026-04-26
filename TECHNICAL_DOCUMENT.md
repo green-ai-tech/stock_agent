@@ -633,7 +633,7 @@ stock_agent/
 ├── .env                        # 环境变量配置
 └── scripts/init_db.py          # 数据库初始化
 ```
-
+ 
 ---
 
 ## 10. 部署
@@ -652,5 +652,4 @@ streamlit run app.py
 ---
 
 **联系方式**
-- GitHub: [your-github-url]
 - 邮箱: [your-email@example.com]
